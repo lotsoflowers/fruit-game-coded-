@@ -9,7 +9,10 @@ const CANVAS_H = 720;
 const CLOUD_STRIP_H = 120; // y=0..120 reserved for cloud area above container
 const CONTAINER_TOP = CLOUD_STRIP_H; // top of physics container interior
 const CONTAINER_BOTTOM = CANVAS_H; // bottom of physics container interior (cosmetic frame ends earlier)
-const DEATH_LINE_Y = CONTAINER_TOP + 36; // if a settled fruit's center is above this for too long, game over
+// Settled fruits that poke up past the very top of the basket trigger
+// game-over. Sits right at the basket's mouth so the player can stack all
+// the way up before losing.
+const DEATH_LINE_Y = CONTAINER_TOP + 8;
 const DEATH_GRACE = 1.8; // seconds above the line before triggering game over
 const MAX_DROP_LEVEL = 4; // levels 0..3 may spawn from the cloud (Cherry → Lemon)
 
@@ -42,27 +45,41 @@ let fruitImages: HTMLImageElement[] = [];
 type FriendEntry = { name: string; avatar: string; score: number };
 const FRIENDS: FriendEntry[] = [];
 
+// ===================== Score history (persisted runs) =====================
+type ScoreEntry = { score: number; date: number };
+const HISTORY_KEY = "kfm_history";
+const MAX_HISTORY = 5;
+
+function loadHistory(): ScoreEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((e: any) => typeof e?.score === "number" && typeof e?.date === "number");
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(list: ScoreEntry[]) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  } catch {}
+}
+
+function formatDate(ms: number): string {
+  const now = Date.now();
+  const diff = now - ms;
+  const day = 24 * 60 * 60 * 1000;
+  if (diff < day) return "today";
+  if (diff < 2 * day) return "yesterday";
+  const d = new Date(ms);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
 // ===================== Drawing Helpers =====================
-// ===== Color helpers =====
-function hexToRgba(hex: string, a: number): string {
-  const c = hex.replace("#", "");
-  const n = parseInt(c, 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-}
-
 type Ctx = CanvasRenderingContext2D;
-
-function drawAura(ctx: Ctx, r: number, color: string) {
-  const grad = ctx.createRadialGradient(0, 0, r * 0.6, 0, 0, r * 1.5);
-  grad.addColorStop(0, hexToRgba(color, 0.4));
-  grad.addColorStop(0.6, hexToRgba(color, 0.18));
-  grad.addColorStop(1, hexToRgba(color, 0));
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(0, 0, r * 1.5, 0, Math.PI * 2);
-  ctx.fill();
-}
-
 
 function drawFruit(
   ctx: CanvasRenderingContext2D,
@@ -86,9 +103,6 @@ function drawFruit(
   ctx.ellipse(0, r * 0.95, r * 0.85, r * 0.16, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Soft glow halo behind the fruit
-  drawAura(ctx, r, f.glow);
-
   ctx.rotate(angle);
 
   if (img && img.complete && img.naturalWidth > 0) {
@@ -96,7 +110,6 @@ function drawFruit(
     // ~2.5x the physics radius so the visible "fruit body" lines up with the
     // collision circle.
     const sz = r * 2.5;
-    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img, -sz / 2, -sz / 2, sz, sz);
   } else {
     // Loading fallback — solid colored disc
@@ -221,6 +234,7 @@ export default function FruitMergeGame() {
 
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
+  const [history, setHistory] = useState<ScoreEntry[]>([]);
   const [coins, setCoins] = useState(120);
   const [sessionTime, setSessionTime] = useState(0);
   const [currentLevel, setCurrentLevel] = useState(0);
@@ -241,6 +255,7 @@ export default function FruitMergeGame() {
         coinsRef.current = c;
       }
     } catch {}
+    setHistory(loadHistory());
   }, []);
 
   // Preload fruit PNGs into the module-level cache so the canvas renderer can
@@ -398,6 +413,7 @@ export default function FruitMergeGame() {
     // Render loop (RAF + setInterval fallback for hidden tabs)
     let raf = 0;
     let lastTick = 0;
+    let interiorGradient: CanvasGradient | null = null; // cached once
     const tick = (t: number) => {
       const ctx = canvasRef.current?.getContext("2d");
       if (!ctx) {
@@ -407,19 +423,18 @@ export default function FruitMergeGame() {
       const dt = lastFrameRef.current ? (t - lastFrameRef.current) / 1000 : 0;
       lastFrameRef.current = t;
 
+      // Pixel-art images: disable smoothing once per frame, not per fruit.
+      ctx.imageSmoothingEnabled = false;
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // Subtle interior wash
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(2, CONTAINER_TOP + 2, CANVAS_W - 4, CANVAS_H - CONTAINER_TOP - 4);
-      ctx.clip();
-      const interior = ctx.createLinearGradient(0, CONTAINER_TOP, 0, CANVAS_H);
-      interior.addColorStop(0, "rgba(255, 250, 220, 0.0)");
-      interior.addColorStop(1, "rgba(255, 130, 50, 0.05)");
-      ctx.fillStyle = interior;
-      ctx.fillRect(0, CONTAINER_TOP, CANVAS_W, CANVAS_H - CONTAINER_TOP);
-      ctx.restore();
+      // Subtle interior wash — gradient is cached the first time we see ctx.
+      if (!interiorGradient) {
+        interiorGradient = ctx.createLinearGradient(0, CONTAINER_TOP, 0, CANVAS_H);
+        interiorGradient.addColorStop(0, "rgba(255, 250, 220, 0.0)");
+        interiorGradient.addColorStop(1, "rgba(255, 130, 50, 0.05)");
+      }
+      ctx.fillStyle = interiorGradient;
+      ctx.fillRect(2, CONTAINER_TOP + 2, CANVAS_W - 4, CANVAS_H - CONTAINER_TOP - 4);
 
       // Draw bodies
       bodiesRef.current.forEach((body) => {
@@ -446,12 +461,17 @@ export default function FruitMergeGame() {
         ctx.restore();
       }
 
-      // Game-over check (any settled body above death line)
+      // Game-over check: only trigger when a fruit has literally overflowed
+      // the top of the basket — its TOP edge crosses above the death line
+      // AND it has come to rest (so a freshly-dropped fruit passing through
+      // the top of the play area doesn't end the game).
       if (!gameOverRef.current && dt > 0) {
         let above = false;
         bodiesRef.current.forEach((body) => {
+          const radius = FRUITS[(body as any).plugin?.level || 0].radius;
+          const fruitTop = body.position.y - radius;
           if (
-            body.position.y - (FRUITS[(body as any).plugin?.level || 0].radius * 0.4) < DEATH_LINE_Y &&
+            fruitTop < DEATH_LINE_Y &&
             Math.abs(body.velocity.x) < 0.6 &&
             Math.abs(body.velocity.y) < 0.6
           ) {
@@ -472,11 +492,12 @@ export default function FruitMergeGame() {
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    // Fallback: if tab gets hidden, RAF can pause. Tick at ~30fps via interval.
+    // Fallback: only fires for hidden tabs (RAF pauses). On the visible
+    // tab, RAF runs every ~16ms so this check stays a no-op cheap heartbeat.
     const fallbackInterval = window.setInterval(() => {
       const now = performance.now();
-      if (now - lastTick > 80) tick(now);
-    }, 33);
+      if (now - lastTick > 250) tick(now);
+    }, 200);
 
     return () => {
       cancelAnimationFrame(raf);
@@ -641,6 +662,17 @@ export default function FruitMergeGame() {
         localStorage.setItem("kfm_high", String(scoreRef.current));
       } catch {}
     }
+    // Log this run into the leaderboard history (only if non-zero score)
+    if (scoreRef.current > 0) {
+      const entry: ScoreEntry = { score: scoreRef.current, date: Date.now() };
+      setHistory((prev) => {
+        const next = [...prev, entry]
+          .sort((a, b) => b.score - a.score)
+          .slice(0, MAX_HISTORY);
+        saveHistory(next);
+        return next;
+      });
+    }
     try {
       localStorage.setItem("kfm_coins", String(coinsRef.current));
     } catch {}
@@ -713,18 +745,31 @@ export default function FruitMergeGame() {
           </div>
           <div className="leaderboard">
             <div className="leaderboard-title">★ LEADERBOARD ★</div>
-            {sortedFriends.map((f, i) => (
-              <div key={f.name} className={"lb-row" + (f.isYou ? " you" : "")}>
-                <div className="lb-rank">#{i + 1}</div>
-                <div className="lb-avatar">{f.avatar}</div>
-                <div className="lb-name">{f.name}</div>
-                <div className="lb-score">{f.score.toLocaleString()}</div>
-              </div>
-            ))}
-            {FRIENDS.length === 0 && (
+            {/* Live "You" row showing the current run */}
+            <div className="lb-row you">
+              <div className="lb-rank">▶</div>
+              <div className="lb-avatar">🌟</div>
+              <div className="lb-name">You · now</div>
+              <div className="lb-score">{score.toLocaleString()}</div>
+            </div>
+            {/* Past best runs from this device */}
+            {history.length > 0 && (
+              <>
+                <div className="lb-section">🏆 BEST RUNS</div>
+                {history.map((h, i) => (
+                  <div key={`${h.date}-${i}`} className="lb-row">
+                    <div className="lb-rank">#{i + 1}</div>
+                    <div className="lb-avatar">{i === 0 ? "👑" : "⭐"}</div>
+                    <div className="lb-name">{formatDate(h.date)}</div>
+                    <div className="lb-score">{h.score.toLocaleString()}</div>
+                  </div>
+                ))}
+              </>
+            )}
+            {history.length === 0 && (
               <div className="lb-empty">
-                <div className="lb-empty-title">No friends yet!</div>
-                <div className="lb-empty-sub">Invite friends to compete on the kawaii leaderboard.</div>
+                <div className="lb-empty-title">No runs yet!</div>
+                <div className="lb-empty-sub">Finish a game to log your score here.</div>
               </div>
             )}
             <button

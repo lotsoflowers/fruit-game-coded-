@@ -583,11 +583,11 @@ button {
   position: absolute;
   left: 12px;
   right: 12px;
-  top: 154px;
+  top: 128px;
   height: 0;
   border-top: 3px dashed rgba(214, 70, 12, 0.4);
   pointer-events: none;
-  opacity: 0.55;
+  opacity: 0.45;
 }
 
 .game-canvas {
@@ -626,6 +626,18 @@ button {
 
 .ctrl-icon .icon {
   font-size: 22px;
+}
+
+/* Section divider inside the leaderboard (e.g., "BEST RUNS" header) */
+.lb-section {
+  font-family: "Press Start 2P", monospace;
+  font-size: 11px;
+  color: #6e3f00;
+  letter-spacing: 1px;
+  text-align: center;
+  padding: 10px 0 6px;
+  margin-top: 6px;
+  border-top: 3px dashed #c47100;
 }
 
 /* Empty-state for the leaderboard when no friends are added */
