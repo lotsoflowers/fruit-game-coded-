@@ -40,6 +40,25 @@ const FRUITS: FruitDef[] = [
 
 // Module-level cache of preloaded fruit images (populated in useEffect on mount).
 let fruitImages: HTMLImageElement[] = [];
+// Per-level offscreen canvases — each PNG pre-rendered at its actual on-screen
+// sprite size so the per-frame draw is a 1:1 blit instead of a 600→65 downscale.
+const fruitSprites: (HTMLCanvasElement | null)[] = [];
+
+function buildFruitSprite(level: number): HTMLCanvasElement | null {
+  if (typeof document === "undefined") return null;
+  const img = fruitImages[level];
+  if (!img || !img.complete || img.naturalWidth === 0) return null;
+  const f = FRUITS[level];
+  const sz = Math.ceil(f.radius * 2.5);
+  const cv = document.createElement("canvas");
+  cv.width = sz;
+  cv.height = sz;
+  const cx = cv.getContext("2d");
+  if (!cx) return null;
+  cx.imageSmoothingEnabled = false;
+  cx.drawImage(img, 0, 0, sz, sz);
+  return cv;
+}
 
 // ===================== Friends (real list, populated by user) =====================
 type FriendEntry = { name: string; avatar: string; score: number };
@@ -92,7 +111,12 @@ function drawFruit(
   const lvl = Math.max(0, Math.min(FRUITS.length - 1, level));
   const f = FRUITS[lvl];
   const r = customRadius ?? f.radius;
-  const img = fruitImages[lvl];
+  // Default-size case: use the pre-rendered sprite cache (no per-frame
+  // 600→sprite-size downscale). Custom-size case (e.g. EVO wheel icons,
+  // Next preview): fall back to drawing the source image directly.
+  const useCache = customRadius === undefined;
+  const sprite = useCache ? fruitSprites[lvl] : null;
+  const img = sprite || fruitImages[lvl];
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -105,12 +129,9 @@ function drawFruit(
 
   ctx.rotate(angle);
 
-  if (img && img.complete && img.naturalWidth > 0) {
-    // Pixel-art images include cat ears + paws sticking out, so render at
-    // ~2.5x the physics radius so the visible "fruit body" lines up with the
-    // collision circle.
+  if (img && (sprite || ((img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0))) {
     const sz = r * 2.5;
-    ctx.drawImage(img, -sz / 2, -sz / 2, sz, sz);
+    ctx.drawImage(img as CanvasImageSource, -sz / 2, -sz / 2, sz, sz);
   } else {
     // Loading fallback — solid colored disc
     ctx.fillStyle = f.glow;
@@ -231,6 +252,9 @@ export default function FruitMergeGame() {
   const scoreRef = useRef<number>(0);
   const coinsRef = useRef<number>(120);
   const lastMergeLevelRef = useRef<number>(-1);
+  // When the player grabs a fruit by clicking on it, we pin its position to
+  // the cursor until pointer-up. Null = not dragging anything.
+  const draggingBodyRef = useRef<Matter.Body | null>(null);
 
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
@@ -265,14 +289,22 @@ export default function FruitMergeGame() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (fruitImages.length === FRUITS.length) {
+      // On HMR remount or revisit: rebuild any missing sprite caches and bump.
+      FRUITS.forEach((_, i) => {
+        if (!fruitSprites[i]) fruitSprites[i] = buildFruitSprite(i);
+      });
       setImgTick((t) => t + 1);
       return;
     }
-    fruitImages = FRUITS.map((f) => {
+    fruitImages = FRUITS.map((f, i) => {
       const img = new Image();
       img.src = f.image;
-      img.onload = () => setImgTick((t) => t + 1);
-      img.onerror = () => setImgTick((t) => t + 1);
+      const onLoaded = () => {
+        fruitSprites[i] = buildFruitSprite(i);
+        setImgTick((t) => t + 1);
+      };
+      img.onload = onLoaded;
+      img.onerror = onLoaded;
       return img;
     });
   }, []);
@@ -464,10 +496,13 @@ export default function FruitMergeGame() {
       // Game-over check: only trigger when a fruit has literally overflowed
       // the top of the basket — its TOP edge crosses above the death line
       // AND it has come to rest (so a freshly-dropped fruit passing through
-      // the top of the play area doesn't end the game).
+      // the top of the play area doesn't end the game). The fruit currently
+      // being dragged is exempt — the player is intentionally holding it.
       if (!gameOverRef.current && dt > 0) {
         let above = false;
+        const dragging = draggingBodyRef.current;
         bodiesRef.current.forEach((body) => {
+          if (body === dragging) return;
           const radius = FRUITS[(body as any).plugin?.level || 0].radius;
           const fruitTop = body.position.y - radius;
           if (
@@ -525,14 +560,104 @@ export default function FruitMergeGame() {
     cloudXRef.current = Math.max(margin, Math.min(CANVAS_W - margin, x));
   }, []);
 
+  // Convert a pointer event into canvas-local coords (matching the physics
+  // 400x720 internal space).
+  const eventToCanvas = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement> | PointerEvent): { x: number; y: number } | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const rx = canvas.width / rect.width;
+      const ry = canvas.height / rect.height;
+      return {
+        x: (e.clientX - rect.left) * rx,
+        y: (e.clientY - rect.top) * ry,
+      };
+    },
+    [],
+  );
+
+  // Find the topmost (most-recently-added) fruit body containing point (x, y).
+  const hitTestFruit = useCallback((x: number, y: number): Matter.Body | null => {
+    const bodies = Array.from(bodiesRef.current.values());
+    // The cat-fruit sprite extends ~1.25× the physics radius beyond the
+    // collision circle (ears stick up, paws stick out). Match the visible
+    // sprite area so clicking on what you SEE actually grabs the fruit.
+    for (let i = bodies.length - 1; i >= 0; i--) {
+      const body = bodies[i];
+      const lvl = (body as any).plugin?.level;
+      if (lvl === undefined) continue;
+      const r = FRUITS[lvl].radius * 1.2;
+      const dx = x - body.position.x;
+      const dy = y - body.position.y;
+      if (dx * dx + dy * dy <= r * r) return body;
+    }
+    return null;
+  }, []);
+
   const onPointerMove: React.PointerEventHandler<HTMLCanvasElement> = (e) => {
+    // While dragging, keep the grabbed body pinned to the cursor and pause
+    // the cloud-follow behaviour so it doesn't slide around mid-drag.
+    const dragging = draggingBodyRef.current;
+    if (dragging) {
+      const p = eventToCanvas(e);
+      if (!p) return;
+      const lvl = (dragging as any).plugin?.level ?? 0;
+      const r = FRUITS[lvl].radius;
+      // Clamp inside the basket so you can't yank fruits out the top/sides.
+      const x = Math.max(r + 4, Math.min(CANVAS_W - r - 4, p.x));
+      const y = Math.max(CONTAINER_TOP + r, Math.min(CANVAS_H - r - 2, p.y));
+      Matter.Body.setPosition(dragging, { x, y });
+      Matter.Body.setVelocity(dragging, { x: 0, y: 0 });
+      Matter.Body.setAngularVelocity(dragging, 0);
+      return;
+    }
     updateCloudFromEvent(e.clientX);
   };
 
   const onPointerDown: React.PointerEventHandler<HTMLCanvasElement> = (e) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (gameOverRef.current) return;
+    const p = eventToCanvas(e);
+    if (!p) return;
+    // First check if the click landed on an existing fruit — if so, grab it
+    // for dragging instead of dropping a new one from the cloud.
+    const hit = hitTestFruit(p.x, p.y);
+    if (hit) {
+      draggingBodyRef.current = hit;
+      // While held, the body shouldn't fall under gravity — it's "kinematic".
+      // Lifting gravity via static toggle keeps it pinned cleanly.
+      Matter.Body.setStatic(hit, true);
+      try {
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      } catch {}
+      return;
+    }
+    // Empty space → existing drop-from-cloud behaviour.
     updateCloudFromEvent(e.clientX);
     drop();
+  };
+
+  const endDrag = useCallback((pointerId?: number) => {
+    const body = draggingBodyRef.current;
+    if (!body) return;
+    Matter.Body.setStatic(body, false);
+    Matter.Body.setVelocity(body, { x: 0, y: 0 });
+    Matter.Body.setAngularVelocity(body, 0);
+    draggingBodyRef.current = null;
+    if (pointerId !== undefined) {
+      try {
+        canvasRef.current?.releasePointerCapture?.(pointerId);
+      } catch {}
+    }
+  }, []);
+
+  const onPointerUp: React.PointerEventHandler<HTMLCanvasElement> = (e) => {
+    endDrag(e.pointerId);
+  };
+
+  const onPointerCancel: React.PointerEventHandler<HTMLCanvasElement> = (e) => {
+    endDrag(e.pointerId);
   };
 
   const drop = useCallback(() => {
@@ -592,6 +717,8 @@ export default function FruitMergeGame() {
 
   const undo = useCallback(() => {
     if (!snapshotRef.current || !engineRef.current || gameOverRef.current) return;
+    // Drop any in-progress drag — the bodies are about to be replaced.
+    draggingBodyRef.current = null;
     bodiesRef.current.forEach((body) => {
       Matter.World.remove(engineRef.current!.world, body);
     });
@@ -630,6 +757,7 @@ export default function FruitMergeGame() {
   // ============= Restart =============
   const restart = useCallback(() => {
     if (!engineRef.current) return;
+    draggingBodyRef.current = null;
     bodiesRef.current.forEach((body) => {
       Matter.World.remove(engineRef.current!.world, body);
     });
@@ -729,6 +857,7 @@ export default function FruitMergeGame() {
 
   return (
     <div className="game-wrapper">
+      <FactTicker />
       <div className="game">
         <Background />
 
@@ -811,6 +940,9 @@ export default function FruitMergeGame() {
               height={CANVAS_H}
               onPointerMove={onPointerMove}
               onPointerDown={onPointerDown}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerCancel}
+              onPointerLeave={onPointerCancel}
             />
             <div className="fx-layer" ref={fxLayerRef}>
               {effects.map((fx) => (
@@ -824,7 +956,7 @@ export default function FruitMergeGame() {
             </div>
           </div>
 
-          <div className="hint">Drag cursor to move cloud · Left mouse click to drop fruit</div>
+          <div className="hint">Move cloud to aim · Click empty space to drop · Drag a fruit to move it</div>
         </div>
 
         {/* RIGHT */}
@@ -871,6 +1003,61 @@ export default function FruitMergeGame() {
 }
 
 // ===================== Subcomponents =====================
+
+// Top-left "Did you know?" trivia ticker. Pulls a random useless fact from
+// uselessfacts.jsph.pl, fades the card out then in on each refresh, and
+// reloads every 2 minutes. Memoized so score updates don't re-render it.
+const FACT_REFRESH_MS = 2 * 60 * 1000;
+
+const FactTicker = React.memo(function FactTicker() {
+  const [fact, setFact] = useState("Loading a fun fact...");
+  const [fading, setFading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchFact = async () => {
+      try {
+        const res = await fetch(
+          "https://uselessfacts.jsph.pl/api/v2/facts/random?language=en",
+        );
+        const data = await res.json();
+        return typeof data?.text === "string" && data.text.length > 0
+          ? data.text
+          : "The fact server returned an empty thought.";
+      } catch {
+        return "The fact server is taking a catnap.";
+      }
+    };
+
+    const update = async () => {
+      setFading(true);
+      // Wait for the fade-out before swapping text so the user doesn't see
+      // a jarring content jump.
+      await new Promise((r) => setTimeout(r, 500));
+      if (cancelled) return;
+      const next = await fetchFact();
+      if (cancelled) return;
+      setFact(next);
+      setFading(false);
+    };
+
+    update();
+    const interval = window.setInterval(update, FACT_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  return (
+    <div id="fact-ticker" className={fading ? "fading" : ""} aria-live="polite">
+      <div className="fact-label">Did you know?</div>
+      <div className="fact-text">{fact}</div>
+    </div>
+  );
+});
+
 function FruitIcon({ level, size, tick = 0 }: { level: number; size: number; tick?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -938,7 +1125,7 @@ function EvolutionWheel({ activeLevel, tick }: { activeLevel: number; tick: numb
   );
 }
 
-function PixelCloud({ x, y, scale = 1 }: { x: number | string; y: number; scale?: number }) {
+const PixelCloud = React.memo(function PixelCloud({ x, y, scale = 1 }: { x: number | string; y: number; scale?: number }) {
   // Build a chunky pixel cloud out of squares
   const px = 8 * scale;
   // Each cell is one pixel block; pattern map (1 = filled, 0 = empty)
@@ -983,9 +1170,9 @@ function PixelCloud({ x, y, scale = 1 }: { x: number | string; y: number; scale?
       )}
     </div>
   );
-}
+});
 
-function Background() {
+const Background = React.memo(function Background() {
   return (
     <>
       <div className="bg-sky" />
@@ -1022,4 +1209,4 @@ function Background() {
       <div className="bg-grass" />
     </>
   );
-}
+});
