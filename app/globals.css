@@ -662,9 +662,9 @@ button {
 /* ================= RIGHT PANEL ================= */
 .right-panel {
   position: absolute;
-  right: 60px;
+  right: 40px;
   top: 90px;
-  width: 320px;
+  width: 380px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -720,8 +720,8 @@ button {
 
 .evo-wheel {
   position: relative;
-  width: 280px;
-  height: 280px;
+  width: 360px;
+  height: 360px;
   border-radius: 50%;
   background:
     radial-gradient(circle at 30% 30%, rgba(255,255,255,0.55), rgba(255,244,196,0.45) 60%, rgba(255,215,130,0.4) 100%);
@@ -737,8 +737,8 @@ button {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 120px;
-  height: 120px;
+  width: 140px;
+  height: 140px;
   border-radius: 50%;
   background: radial-gradient(circle at 30% 30%, #fff, #ffe09a 70%, #ffb84a 100%);
   border: 5px solid #6e3f00;
@@ -754,6 +754,16 @@ button {
     inset 4px 4px 0 #fff,
     inset -4px -4px 0 #c47100,
     0 4px 0 #2d1700;
+}
+
+.evo-center-title {
+  font-size: 18px !important;
+  letter-spacing: 2px !important;
+}
+
+.evo-center-sub {
+  font-size: 14px !important;
+  margin-top: 6px !important;
 }
 
 .evo-center-title {

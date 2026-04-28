@@ -11,32 +11,32 @@ const CONTAINER_TOP = CLOUD_STRIP_H; // top of physics container interior
 const CONTAINER_BOTTOM = CANVAS_H; // bottom of physics container interior (cosmetic frame ends earlier)
 const DEATH_LINE_Y = CONTAINER_TOP + 36; // if a settled fruit's center is above this for too long, game over
 const DEATH_GRACE = 1.8; // seconds above the line before triggering game over
-const MAX_DROP_LEVEL = 5; // levels 0..4 may spawn from the cloud
+const MAX_DROP_LEVEL = 4; // levels 0..3 may spawn from the cloud (Cherry → Lemon)
 
 // ===================== Fruit Definitions =====================
 type FruitDef = {
   level: number;
   name: string;
   radius: number;
-  color: string;
-  highlight: string;
-  outline: string;
-  decoration?: "stem" | "leaf" | "stripes" | "spots" | "pineapple";
+  image: string;
+  // Optional accent color (used for the soft glow halo behind the fruit)
+  glow: string;
 };
 
+// Ordered smallest -> largest along the merge chain
 const FRUITS: FruitDef[] = [
-  { level: 0,  name: "Cherry",     radius: 18,  color: "#ff5c6e", highlight: "#ffb1bb", outline: "#a31b30", decoration: "stem" },
-  { level: 1,  name: "Strawberry", radius: 24,  color: "#ff3a4f", highlight: "#ffaab4", outline: "#9c1929", decoration: "spots" },
-  { level: 2,  name: "Grape",      radius: 32,  color: "#a063e8", highlight: "#d6b3ff", outline: "#5a2da8", decoration: "leaf" },
-  { level: 3,  name: "Lemon",      radius: 40,  color: "#ffd83d", highlight: "#fff7b3", outline: "#b88a00", decoration: "leaf" },
-  { level: 4,  name: "Orange",     radius: 50,  color: "#ff9234", highlight: "#ffd2a5", outline: "#a85700", decoration: "leaf" },
-  { level: 5,  name: "Apple",      radius: 60,  color: "#ff5a45", highlight: "#ffb6a6", outline: "#9b1d10", decoration: "leaf" },
-  { level: 6,  name: "Peach",      radius: 72,  color: "#ffb3c1", highlight: "#ffe1e7", outline: "#cc6f86", decoration: "leaf" },
-  { level: 7,  name: "Pineapple",  radius: 86,  color: "#ffd84a", highlight: "#fff1a6", outline: "#a87a00", decoration: "pineapple" },
-  { level: 8,  name: "Melon",      radius: 100, color: "#a8e063", highlight: "#dcf2b3", outline: "#558a2a", decoration: "leaf" },
-  { level: 9,  name: "Watermelon", radius: 116, color: "#3ec06b", highlight: "#a4e5be", outline: "#1c5f33", decoration: "stripes" },
-  { level: 10, name: "Mega Melon", radius: 132, color: "#ff7eb0", highlight: "#ffc7df", outline: "#a64178", decoration: "leaf" },
+  { level: 0, name: "Cherry",       radius: 26,  image: "/fruits/1.png", glow: "#ff7c8d" },
+  { level: 1, name: "Strawberry",   radius: 34,  image: "/fruits/6.png", glow: "#ff6479" },
+  { level: 2, name: "Grape",        radius: 44,  image: "/fruits/7.png", glow: "#bf86ff" },
+  { level: 3, name: "Lemon",        radius: 54,  image: "/fruits/8.png", glow: "#ffe24a" },
+  { level: 4, name: "Orange",       radius: 66,  image: "/fruits/2.png", glow: "#ffa44a" },
+  { level: 5, name: "Yellow Melon", radius: 80,  image: "/fruits/5.png", glow: "#ffd864" },
+  { level: 6, name: "Green Melon",  radius: 96,  image: "/fruits/3.png", glow: "#b9e86e" },
+  { level: 7, name: "Watermelon",   radius: 114, image: "/fruits/4.png", glow: "#5cc870" },
 ];
+
+// Module-level cache of preloaded fruit images (populated in useEffect on mount).
+let fruitImages: HTMLImageElement[] = [];
 
 // ===================== Friends (static for leaderboard) =====================
 const FRIENDS = [
@@ -849,6 +849,7 @@ function drawFruit(
   const lvl = Math.max(0, Math.min(FRUITS.length - 1, level));
   const f = FRUITS[lvl];
   const r = customRadius ?? f.radius;
+  const img = fruitImages[lvl];
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -856,16 +857,28 @@ function drawFruit(
   // Ground shadow
   ctx.fillStyle = "rgba(80, 40, 10, 0.18)";
   ctx.beginPath();
-  ctx.ellipse(0, r * 0.95, r * 0.85, r * 0.15, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, r * 0.95, r * 0.85, r * 0.16, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Soft aura behind fruit
-  drawAura(ctx, r, f.highlight);
+  // Soft glow halo behind the fruit
+  drawAura(ctx, r, f.glow);
 
   ctx.rotate(angle);
 
-  const drawer = FRUIT_DRAWERS[lvl] || drawCherryArt;
-  drawer(ctx, r, f);
+  if (img && img.complete && img.naturalWidth > 0) {
+    // Pixel-art images include cat ears + paws sticking out, so render at
+    // ~2.5x the physics radius so the visible "fruit body" lines up with the
+    // collision circle.
+    const sz = r * 2.5;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, -sz / 2, -sz / 2, sz, sz);
+  } else {
+    // Loading fallback — solid colored disc
+    ctx.fillStyle = f.glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   ctx.restore();
 }
@@ -1014,6 +1027,25 @@ export default function FruitMergeGame() {
         coinsRef.current = c;
       }
     } catch {}
+  }, []);
+
+  // Preload fruit PNGs into the module-level cache so the canvas renderer can
+  // draw them instantly. Triggers a state bump after each image finishes
+  // loading so the small FruitIcon canvases redraw with the loaded sprite.
+  const [imgTick, setImgTick] = useState(0);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (fruitImages.length === FRUITS.length) {
+      setImgTick((t) => t + 1);
+      return;
+    }
+    fruitImages = FRUITS.map((f) => {
+      const img = new Image();
+      img.src = f.image;
+      img.onload = () => setImgTick((t) => t + 1);
+      img.onerror = () => setImgTick((t) => t + 1);
+      return img;
+    });
   }, []);
 
   // Responsive scaling
@@ -1540,9 +1572,9 @@ export default function FruitMergeGame() {
         <div className="right-panel">
           <div className="next-bubble">
             <div className="next-label">Next!</div>
-            <FruitIcon level={nextLevel} size={110} />
+            <FruitIcon level={nextLevel} size={110} tick={imgTick} />
           </div>
-          <EvolutionWheel activeLevel={activeEvoLevel} />
+          <EvolutionWheel activeLevel={activeEvoLevel} tick={imgTick} />
         </div>
 
         {gameOver && (
@@ -1563,24 +1595,35 @@ export default function FruitMergeGame() {
 }
 
 // ===================== Subcomponents =====================
-function FruitIcon({ level, size }: { level: number; size: number }) {
+function FruitIcon({ level, size, tick = 0 }: { level: number; size: number; tick?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
     const ctx = c.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, size, size);
-    drawFruit(ctx, size / 2, size / 2, 0, level, size / 2 - 6);
-  }, [level, size]);
+    ctx.imageSmoothingEnabled = false;
+    const draw = () => {
+      ctx.clearRect(0, 0, size, size);
+      drawFruit(ctx, size / 2, size / 2, 0, level, size / 2 - 6);
+    };
+    draw();
+    // If the image isn't loaded yet, redraw on load
+    const img = fruitImages[level];
+    if (img && !img.complete) {
+      const onLoad = () => draw();
+      img.addEventListener("load", onLoad);
+      return () => img.removeEventListener("load", onLoad);
+    }
+  }, [level, size, tick]);
   return <canvas ref={ref} width={size} height={size} style={{ width: size, height: size }} />;
 }
 
-function EvolutionWheel({ activeLevel }: { activeLevel: number }) {
-  const wheelSize = 280;
-  const centerR = 60;
-  const ringR = wheelSize / 2 - 22;
-  const wheelFruits = FRUITS.slice(0, 10);
+function EvolutionWheel({ activeLevel, tick }: { activeLevel: number; tick: number }) {
+  const wheelSize = 360;
+  const ringR = wheelSize / 2 - 50;
+  // Show ALL fruits in size order around the wheel (smallest at top, growing clockwise)
+  const wheelFruits = FRUITS;
 
   return (
     <div className="evo-wheel" style={{ width: wheelSize, height: wheelSize }}>
@@ -1592,7 +1635,10 @@ function EvolutionWheel({ activeLevel }: { activeLevel: number }) {
         const angle = (i / wheelFruits.length) * Math.PI * 2 - Math.PI / 2;
         const x = wheelSize / 2 + Math.cos(angle) * ringR;
         const y = wheelSize / 2 + Math.sin(angle) * ringR;
-        const sz = 44;
+        // Icon size scales with the fruit's place in the merge chain
+        const baseSz = 60;
+        const grow = (f.level / (FRUITS.length - 1)) * 38;
+        const sz = Math.round(baseSz + grow);
         return (
           <div
             key={f.level}
@@ -1608,7 +1654,7 @@ function EvolutionWheel({ activeLevel }: { activeLevel: number }) {
             }}
             title={f.name}
           >
-            <FruitIcon level={f.level} size={sz} />
+            <FruitIcon level={f.level} size={sz} tick={tick} />
           </div>
         );
       })}
