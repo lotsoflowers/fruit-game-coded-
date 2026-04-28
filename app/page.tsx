@@ -38,13 +38,9 @@ const FRUITS: FruitDef[] = [
 // Module-level cache of preloaded fruit images (populated in useEffect on mount).
 let fruitImages: HTMLImageElement[] = [];
 
-// ===================== Friends (static for leaderboard) =====================
-const FRIENDS = [
-  { name: "Mochi",   avatar: "🐰", score: 24850 },
-  { name: "Yuki",    avatar: "🐱", score: 19320 },
-  { name: "Pico",    avatar: "🐻", score: 14210 },
-  { name: "Bubbles", avatar: "🦄", score: 9870 },
-];
+// ===================== Friends (real list, populated by user) =====================
+type FriendEntry = { name: string; avatar: string; score: number };
+const FRIENDS: FriendEntry[] = [];
 
 // ===================== Drawing Helpers =====================
 // ===== Color helpers =====
@@ -1475,9 +1471,11 @@ export default function FruitMergeGame() {
   }, [score, highScore]);
 
   // ===================== Render =====================
-  const sortedFriends = [...FRIENDS, { name: "You", avatar: "🌟", score, isYou: true } as any].sort(
-    (a, b) => b.score - a.score,
-  );
+  // Always show "You" at the top; real friends would slot in here.
+  const sortedFriends: Array<FriendEntry & { isYou?: boolean }> = [
+    { name: "You", avatar: "🌟", score, isYou: true },
+    ...FRIENDS,
+  ].sort((a, b) => b.score - a.score);
 
   return (
     <div className="game-wrapper">
@@ -1496,8 +1494,8 @@ export default function FruitMergeGame() {
             {coins.toLocaleString()}
           </div>
           <div className="leaderboard">
-            <div className="leaderboard-title">★ FRIENDS ★</div>
-            {sortedFriends.slice(0, 5).map((f: any, i: number) => (
+            <div className="leaderboard-title">★ LEADERBOARD ★</div>
+            {sortedFriends.map((f, i) => (
               <div key={f.name} className={"lb-row" + (f.isYou ? " you" : "")}>
                 <div className="lb-rank">#{i + 1}</div>
                 <div className="lb-avatar">{f.avatar}</div>
@@ -1505,7 +1503,21 @@ export default function FruitMergeGame() {
                 <div className="lb-score">{f.score.toLocaleString()}</div>
               </div>
             ))}
-            <button className="invite-btn" onClick={() => alert("Invite link copied!")}>
+            {FRIENDS.length === 0 && (
+              <div className="lb-empty">
+                <div className="lb-empty-title">No friends yet!</div>
+                <div className="lb-empty-sub">Invite friends to compete on the kawaii leaderboard.</div>
+              </div>
+            )}
+            <button
+              className="invite-btn"
+              onClick={() => {
+                try {
+                  navigator.clipboard?.writeText(window.location.href);
+                } catch {}
+                alert("Invite link copied to clipboard!");
+              }}
+            >
               + Invite Friends
             </button>
           </div>
@@ -1549,22 +1561,6 @@ export default function FruitMergeGame() {
             </div>
           </div>
 
-          <div className="bottom-controls">
-            <button className="ctrl-btn" onClick={() => alert("Menu")}>
-              <span className="icon">☰</span> Menu
-            </button>
-            <button className="ctrl-btn" onClick={restart}>
-              <span className="icon">↻</span> Restart
-            </button>
-            <button
-              className="ctrl-btn"
-              onClick={undo}
-              style={{ opacity: canUndo ? 1 : 0.5 }}
-              disabled={!canUndo}
-            >
-              <span className="icon">↶</span> Undo
-            </button>
-          </div>
           <div className="hint">Drag cursor to move cloud · Left mouse click to drop fruit</div>
         </div>
 
@@ -1575,6 +1571,23 @@ export default function FruitMergeGame() {
             <FruitIcon level={nextLevel} size={110} tick={imgTick} />
           </div>
           <EvolutionWheel activeLevel={activeEvoLevel} tick={imgTick} />
+          <div className="wheel-controls">
+            <button className="ctrl-btn ctrl-icon" onClick={() => alert("Menu")} title="Menu">
+              <span className="icon">☰</span>
+            </button>
+            <button className="ctrl-btn" onClick={restart} title="Restart">
+              <span className="icon">↻</span> Restart
+            </button>
+            <button
+              className="ctrl-btn ctrl-icon"
+              onClick={undo}
+              style={{ opacity: canUndo ? 1 : 0.5 }}
+              disabled={!canUndo}
+              title="Undo last drop"
+            >
+              <span className="icon">↶</span>
+            </button>
+          </div>
         </div>
 
         {gameOver && (

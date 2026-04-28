@@ -609,6 +609,52 @@ button {
   z-index: 10;
 }
 
+/* Compact controls cluster sitting under the EVO wheel */
+.wheel-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 4px;
+  z-index: 10;
+}
+
+.ctrl-icon {
+  padding: 12px 14px !important;
+  min-width: 0;
+}
+
+.ctrl-icon .icon {
+  font-size: 22px;
+}
+
+/* Empty-state for the leaderboard when no friends are added */
+.lb-empty {
+  text-align: center;
+  padding: 16px 8px 12px;
+  margin: 6px 0 10px;
+  background: #fff;
+  border: 3px dashed #c47100;
+  border-radius: 0;
+  box-shadow: inset 2px 2px 0 #fff5d0;
+}
+
+.lb-empty-title {
+  font-family: "Press Start 2P", monospace;
+  font-size: 11px;
+  color: #6e3f00;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+}
+
+.lb-empty-sub {
+  font-family: "VT323", monospace;
+  font-size: 16px;
+  color: #8a5a2a;
+  letter-spacing: 0.5px;
+  line-height: 1.2;
+}
+
 .ctrl-btn {
   display: inline-flex;
   align-items: center;
