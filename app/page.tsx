@@ -309,15 +309,33 @@ export default function FruitMergeGame() {
     });
   }, []);
 
-  // Responsive scaling
+  // Responsive scaling — fill the viewport entirely while preserving the
+  // 1440x830 aspect ratio. No artificial cap, so the game scales up on big
+  // monitors and down on small ones to occupy as much space as possible.
   useEffect(() => {
     const apply = () => {
       const scale = Math.min(window.innerWidth / 1440, window.innerHeight / 830);
-      document.documentElement.style.setProperty("--game-scale", String(Math.min(scale, 1.15)));
+      document.documentElement.style.setProperty("--game-scale", String(scale));
     };
     apply();
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
+  }, []);
+
+  // Fullscreen toggle — true browser fullscreen via the Fullscreen API.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = useCallback(() => {
+    if (typeof document === "undefined") return;
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
   }, []);
 
   // Session timer
@@ -857,9 +875,17 @@ export default function FruitMergeGame() {
 
   return (
     <div className="game-wrapper">
-      <FactTicker />
       <div className="game">
         <Background />
+        <FactTicker />
+        <button
+          className="fullscreen-btn"
+          onClick={toggleFullscreen}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          title={isFullscreen ? "Exit fullscreen (Esc)" : "Enter fullscreen"}
+        >
+          {isFullscreen ? "⛶" : "⛶"}
+        </button>
 
         {/* LEFT */}
         <div className="left-panel">
